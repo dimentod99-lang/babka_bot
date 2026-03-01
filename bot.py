@@ -8,7 +8,6 @@ import base64
 import io
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from telegram.ext import AIORateLimiter  # 👈 Додаємо для швидкості!
 import aiohttp
 import json
 from system_prompt import SYSTEM_PROMPT
@@ -16,8 +15,9 @@ from system_prompt import SYSTEM_PROMPT
 # ===== НАЛАШТУВАННЯ =====
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 KIE_AI_API_KEY = os.environ.get("KIE_AI_API_KEY")  # 👈 ТВІЙ КЛЮЧ KIE.AI!
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")  # 👈 РЕЗЕРВНИЙ КЛЮЧ
 
-# API ендпоінти KIE.AI [citation:1][citation:6]
+# API ендпоінти KIE.AI
 KIE_AI_API_URL = "https://api.kie.ai/v1/chat/completions"  # Для тексту
 KIE_AI_IMAGE_URL = "https://api.kie.ai/v1/images/generations"  # Для картинок
 
@@ -64,13 +64,13 @@ async def get_image_base64(photo_url):
 
 # ===== ФУНКЦІЯ ДЛЯ ГЕНЕРАЦІЇ ЗОБРАЖЕНЬ ЧЕРЕЗ KIE.AI =====
 async def generate_image_kie(prompt):
-    """Генерація зображень через Kie.ai (швидко та якісно!) [citation:1]"""
+    """Генерація зображень через Kie.ai (швидко та якісно!)"""
     headers = {
         "Authorization": f"Bearer {KIE_AI_API_KEY}",
         "Content-Type": "application/json"
     }
     
-    # Використовуємо GPT-4o Image модель від Kie.ai [citation:1]
+    # Використовуємо GPT-4o Image модель від Kie.ai
     payload = {
         "model": "gpt-4o-image",  # Спеціальна модель для картинок!
         "prompt": prompt,
@@ -95,6 +95,33 @@ async def generate_image_kie(prompt):
                     return None
     except Exception as e:
         logger.error(f"Exception в generate_image_kie: {e}")
+        return None
+
+# ===== ЗАПАСНА ФУНКЦІЯ ДЛЯ ГЕНЕРАЦІЇ ЗОБРАЖЕНЬ ЧЕРЕЗ OPENROUTER =====
+async def generate_image_fallback(prompt):
+    """Запасна генерація через OpenRouter"""
+    if not OPENROUTER_API_KEY:
+        return None
+    
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "model": "stabilityai/stable-diffusion-xl",
+        "prompt": prompt,
+        "n": 1,
+        "size": "1024x1024"
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post("https://openrouter.ai/api/v1/images/generations", headers=headers, json=payload) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return data['data'][0]['url']
+    except:
         return None
 
 # ===== АНАЛІЗ АВАТАРКИ ЧЕРЕЗ KIE.AI =====
@@ -189,7 +216,7 @@ async def ask_kie_ai(user_message, user_id, username, avatar_info="", user_lang=
 3. До власника @kexxynd стався з повагою, по-дружньому
 4. Підтримуй діалог як реальна людина"""
     
-    # Використовуємо швидку модель [citation:1]
+    # Використовуємо швидку модель
     payload = {
         "model": "gpt-4o-mini",  # Найшвидша модель!
         "messages": [
@@ -297,7 +324,7 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📅 **Версія:** 3.0 - Kie.ai Ultra\n\n"
         "**🌈 Особливості:**\n"
         "• Відповідаю за 1-2 секунди\n"
-        "• Малюю через GPT-4o Image [citation:1]\n"
+        "• Малюю через GPT-4o Image\n"
         "• Аналізую фото через gpt-4o-mini\n"
         "• Працюю в групах першою!\n"
         "• Кешую аватарки для швидкості",
@@ -341,7 +368,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text("🎨 **Малюю через Kie.ai GPT-4o Image...** ⚡")
         
-        # Генеруємо через Kie.ai [citation:1]
+        # Генеруємо через Kie.ai
         image_url = await generate_image_kie(prompt)
         
         if image_url == "rate_limit":
@@ -473,7 +500,7 @@ def fake_web_server():
 thread = threading.Thread(target=fake_web_server, daemon=True)
 thread.start()
 
-# ===== ГОЛОВНА ФУНКЦІЯ З RateLimiter =====
+# ===== ГОЛОВНА ФУНКЦІЯ (RateLimiter ВИДАЛЕНО!) =====
 def main():
     if not TELEGRAM_BOT_TOKEN:
         logger.error("Немає TELEGRAM_BOT_TOKEN!")
@@ -484,30 +511,10 @@ def main():
         print("⚠️ Додай KIE_AI_API_KEY в Environment Variables!")
         return
     
-    # Додаємо RateLimiter для швидкості [citation:4][citation:7]
-    application = (
-        Application.builder()
-        .token(TELEGRAM_BOT_TOKEN)
-        .rate_limiter(AIORateLimiter(
-            overall_max_rate=30,  # 30 повідомлень/секунду загалом
-            group_max_rate=20,     # 20 повідомлень/хвилину в групах
-            max_retries=3          # 3 спроби при помилці
-        ))
-        .build()
-    )
+    # RateLimiter ВИДАЛЕНО - простий і надійний варіант!
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("info", info_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    application.add_handler(MessageHandler(filters.VOICE, handle_voice))
-    application.add_error_handler(error_handler)
-    
-    print("✅ БАБКА ІЗ СЛОНИКА (KIE.AI ULTRA) ЗАПУЩЕНА! ⚡")
-    print(f"👑 Власник: @kexxynd")
-    print("🚀 Режим: Kie.ai Ultra + RateLimiter + Кеш")
-    application.run_polling()
-
-if __name__ == "__main__":
-    main()
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
