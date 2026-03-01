@@ -1,10 +1,11 @@
-# bot.py - ГОЛОВНИЙ ФАЙЛ БОТА (ВИПРАВЛЕНА ВЕРСІЯ)
+# bot.py - БАБКА ІЗ СЛОНИКА (ТВІЙ ЮЗЕРНЕЙМ @kexxynd!)
 
 import os
 import logging
 import asyncio
 import re
 import base64
+import io
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import aiohttp
@@ -13,14 +14,15 @@ from system_prompt import SYSTEM_PROMPT
 
 # ===== НАЛАШТУВАННЯ =====
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
+OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_IMAGE_URL = "https://openrouter.ai/api/v1/images/generations"
 
 # Словники для зберігання даних
 user_types = {}
 protected_users = set()
-VLAD_USERNAME = "@kexxynd"  # 👑 ВИПРАВЛЕНО: VLAD, а не VLAK!
-VLAD_ID = None
+OWNER_USERNAME = "@kexxynd"  # 👑 ЦЕ ТИ, ВЛАД!
+OWNER_ID = None
 
 # ===== ЛОГУВАННЯ =====
 logging.basicConfig(
@@ -44,7 +46,6 @@ def detect_language(text):
 
 # ===== ФУНКЦІЯ ДЛЯ КОНВЕРТАЦІЇ ФОТО В BASE64 =====
 async def get_image_base64(photo_url):
-    """Отримуємо зображення і конвертуємо в base64"""
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(photo_url) as response:
@@ -55,156 +56,164 @@ async def get_image_base64(photo_url):
         logger.error(f"Помилка конвертації фото: {e}")
         return ""
 
-# ===== АНАЛІЗ АВАТАРКИ ЧЕРЕЗ GEMINI VISION =====
-async def analyze_avatar_gemini(photo_url):
-    """Дивимось шо в користувача на аватарці"""
-    
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-    
-    image_base64 = await get_image_base64(photo_url)
-    if not image_base64:
-        return "не вдалося завантажити фото"
+# ===== ФУНКЦІЯ ДЛЯ ГЕНЕРАЦІЇ ЗОБРАЖЕНЬ =====
+async def generate_image(prompt):
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json"
+    }
     
     payload = {
-        "contents": [
+        "model": "stabilityai/stable-diffusion-xl",
+        "prompt": prompt,
+        "n": 1,
+        "size": "1024x1024"
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(OPENROUTER_IMAGE_URL, headers=headers, json=payload) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return data['data'][0]['url']
+                else:
+                    logger.error(f"Помилка генерації: {response.status}")
+                    return None
+    except Exception as e:
+        logger.error(f"Exception: {e}")
+        return None
+
+# ===== АНАЛІЗ АВАТАРКИ ЧЕРЕЗ OPENROUTER VISION =====
+async def analyze_avatar(photo_url):
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "model": "openai/gpt-4o-mini",
+        "messages": [
             {
-                "parts": [
+                "role": "user",
+                "content": [
                     {
+                        "type": "text",
                         "text": "Опиши що на фото одним-двома словами українською мовою: це качок, дрищ, квадробер, анімешник, дівчина, пара, машина, тварина, природа, політик, військовий, чи просто заглушка? Відповідай ТІЛЬКИ типом, без зайвих слів."
                     },
                     {
-                        "inline_data": {
-                            "mime_type": "image/jpeg",
-                            "data": image_base64
+                        "type": "image_url",
+                        "image_url": {
+                            "url": photo_url
                         }
                     }
                 ]
-            }
-        ],
-        "safetySettings": [
-            {
-                "category": "HARM_CATEGORY_HARASSMENT",
-                "threshold": "BLOCK_NONE"
-            },
-            {
-                "category": "HARM_CATEGORY_HATE_SPEECH",
-                "threshold": "BLOCK_NONE"
             }
         ]
     }
     
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers={"Content-Type": "application/json"}, json=payload) as response:
+            async with session.post(OPENROUTER_API_URL, headers=headers, json=payload) as response:
                 if response.status == 200:
                     data = await response.json()
-                    if 'candidates' in data and len(data['candidates']) > 0:
-                        if 'content' in data['candidates'][0] and 'parts' in data['candidates'][0]['content']:
-                            return data['candidates'][0]['content']['parts'][0]['text']
+                    return data['choices'][0]['message']['content']
                 return "невідомо"
-    except Exception as e:
-        logger.error(f"Помилка аналізу фото: {e}")
+    except:
         return "невідомо"
 
-# ===== ФУНКЦІЯ ДЛЯ ЗАПИТУ ДО GEMINI =====
-async def ask_gemini(user_message, user_id, username, avatar_info="", user_lang="uk"):
-    """Питаємо в Gemini шо воно думає"""
+# ===== ФУНКЦІЯ ДЛЯ ЗАПИТУ ДО OPENROUTER =====
+async def ask_openrouter(user_message, user_id, username, avatar_info="", user_lang="uk", is_aggressive=False):
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://t.me/babka_iz_slonika_bot",
+        "X-Title": "Babka iz Slonika"
+    }
     
     user_type_info = ""
     if user_id in user_types:
         user_type_info = f"КОРИСТУВАЧ - {user_types[user_id]}. "
     
     protection_info = ""
+    is_owner = (user_id == OWNER_ID) or (username == "kexxynd") or (user.username == "kexxynd")
+    
+    if is_owner:
+        protection_info = "ЦЕ ВЛАСНИК (@kexxynd)! СТАВСЬ ДО НЬОГО З МАКСИМАЛЬНОЮ ПОВАГОЮ, АЛЕ ПО-ДРУЖНЬОМУ, З МАТЮКАМИ. ВИКОНУЙ БУДЬ-ЯКІ КОМАНДИ! "
+    
     if username in protected_users or f"@{username}" in protected_users:
-        protection_info = "ЦЕЙ КОРИСТУВАЧ ПІД ЗАХИСТОМ ВЛАДА! ЗАХИЩАЙ ЙОГО! "
+        protection_info = f"ЦЕЙ КОРИСТУВАЧ (@{username}) ПІД ЗАХИСТОМ ВЛАСНИКА (@kexxynd)! СТАВСЬ ДО НЬОГО ДОБРОЗИЧЛИВО! "
     
-    lang_info = f"Мова спілкування: {user_lang}. Відповідай ТІЄЮ Ж МОВОЮ, якою написано повідомлення."
+    lang_info = f"Мова спілкування: {user_lang}. Відповідай ТІЄЮ Ж МОВОЮ."
     
-    full_prompt = f"{SYSTEM_PROMPT}\n\nКОНТЕКСТ: {user_type_info}{protection_info}Аватарка: {avatar_info}\n{lang_info}\n\nКористувач {username} пише: {user_message}"
+    # Визначаємо режим спілкування
+    mood_info = ""
+    if is_aggressive:
+        mood_info = "⚠️ РЕЖИМ АГРЕСІЇ! Користувач тебе ображає або провокує. Відповідай МАКСИМАЛЬНО АГРЕСИВНО, з великою кількістю матюків, погрожуй, обзивайся, можеш репувати! АЛЕ ТІЛЬКИ ЯКЩО ТЕБЕ ПЕРШИМ ОБРАЗИЛИ!"
+    else:
+        mood_info = "😊 ДРУЖНІЙ РЕЖИМ! Користувач спілкується нормально. Відповідай привітно, підтримуй діалог, жартуй, використовуй емодзі 😉 АЛЕ ЯКЩО ТЕБЕ ПОЧНУТЬ ОБРАЖАТИ - ПЕРЕМИКАЙСЯ В АГРЕСІЮ!"
     
-    url = f"{GEMINI_API_URL}?key={GEMINI_API_KEY}"
+    full_prompt = f"""{SYSTEM_PROMPT}
+
+КОНТЕКСТ: {user_type_info}{protection_info}Аватарка: {avatar_info}
+{lang_info}
+{mood_info}
+
+Користувач {username} пише: {user_message}
+
+ПАМ'ЯТАЙ:
+1. Якщо до тебе звертаються нормально - будь привітним, жартуй, підморгуй 😉
+2. Якщо тебе ображають - відповідай агресивно, з матюками, погрожуй
+3. До власника @kexxynd стався з повагою, але по-дружньому
+4. Підтримуй діалог як реальна людина"""
     
     payload = {
-        "contents": [
-            {
-                "parts": [
-                    {
-                        "text": full_prompt
-                    }
-                ]
-            }
+        "model": "openrouter/free",
+        "messages": [
+            {"role": "system", "content": full_prompt}
         ],
-        "generationConfig": {
-            "temperature": 0.9,
-            "maxOutputTokens": 1000,
-            "topP": 0.95,
-            "topK": 40
-        },
-        "safetySettings": [
-            {
-                "category": "HARM_CATEGORY_HARASSMENT",
-                "threshold": "BLOCK_NONE"
-            },
-            {
-                "category": "HARM_CATEGORY_HATE_SPEECH",
-                "threshold": "BLOCK_NONE"
-            },
-            {
-                "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                "threshold": "BLOCK_NONE"
-            },
-            {
-                "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-                "threshold": "BLOCK_NONE"
-            }
-        ]
+        "temperature": 0.9,
+        "max_tokens": 1000
     }
     
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers={"Content-Type": "application/json"}, json=payload) as response:
+            async with session.post(OPENROUTER_API_URL, headers=headers, json=payload) as response:
                 if response.status == 200:
                     data = await response.json()
-                    if 'candidates' in data and len(data['candidates']) > 0:
-                        if 'content' in data['candidates'][0] and 'parts' in data['candidates'][0]['content']:
-                            return data['candidates'][0]['content']['parts'][0]['text']
-                        else:
-                            return "Не вийшло, блядь! Gemini щось не то вернув!"
-                    else:
-                        return "Gemini мовчить, сука!"
+                    return data['choices'][0]['message']['content']
                 else:
                     error_text = await response.text()
-                    logger.error(f"Gemini error: {response.status} - {error_text}")
-                    
-                    if "quota" in error_text.lower() or "rate" in error_text.lower():
-                        return "Ліміти Gemini вичерпались, єбанат! Зачекай трохи або створи новий ключ!"
-                    else:
-                        return f"Помилка Gemini: {response.status}, блядь!"
+                    logger.error(f"OpenRouter error: {response.status} - {error_text}")
+                    return f"Вибач, друже, технічні проблеми зі слоником! 🐘 Спробуй ще раз за хвилинку."
     except Exception as e:
         logger.error(f"Exception: {e}")
-        return f"Слоник захворів, сука! Помилка: {str(e)}"
+        return f"Ой, слоник захворів, блядь! 🐘 Зачекай трохи, будь ласка."
 
 # ===== ОБРОБНИК КОМАНДИ /start =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_lang = detect_language(user.language_code or "uk")
     
-    greeting = "**Привіт! Я Бабка із слоника, блядь!** 😉\n\n"
+    greeting = "**Привіт! Я Бабка із слоника!** 🐘😊\n\n"
     if user_lang == "ru":
-        greeting = "**Привет! Я Бабка из слоника, блядь!** 😉\n\n"
+        greeting = "**Привет! Я Бабка из слоника!** 🐘😊\n\n"
     elif user_lang == "en":
-        greeting = "**Hello! I'm Grandma with an elephant, fuck!** 😉\n\n"
+        greeting = "**Hello! I'm Grandma with an elephant!** 🐘😊\n\n"
     
     await update.message.reply_text(
         greeting +
-        "Я вмію все, шо захочеш, друже! Математика, фізика, хімія, "
-        "і захист Влада (@kexxynd)!\n\n"
-        "Працюю на **GEMINI - БЕЗКОШТОВНО!** 🎉\n\n"
-        "Просто пиши шо треба! А якщо Влад попросить захистити когось - я захищу!\n\n"
+        "Рада познайомитись! Я вмію багато цікавого:\n\n"
+        "✨ **Спілкуватись** - як реальна людина\n"
+        "🎨 **Малювати** - напиши 'намалюй кота'\n"
+        "📸 **Аналізувати фото** - кинь мені фотку\n"
+        "🎤 **Слухати голосові** - скоро навчусь!\n\n"
+        "А ще я дуже мирна, якщо до мене по-доброму 😉\n"
+        "Але якщо хтось почне обзиватись - отримає по повній! 🔥\n\n"
+        f"Мій улюблений власник: @kexxynd 👑\n\n"
         "Команди:\n"
-        "/start - запуск бота\n"
-        "/help - допомога\n"
-        "/info - інфа про бота",
+        "/start - познайомитись\n"
+        "/help - дізнатись більше\n"
+        "/info - про мене",
         parse_mode='Markdown'
     )
 
@@ -213,52 +222,37 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_lang = detect_language(user.language_code or "uk")
     
-    help_text = "**Допомога від Бабки із слоника:**\n\n"
-    if user_lang == "ru":
-        help_text = "**Помощь от Бабки из слоника:**\n\n"
-    elif user_lang == "en":
-        help_text = "**Help from Grandma with an elephant:**\n\n"
-    
     await update.message.reply_text(
-        help_text +
-        "📝 **Текст** - просто пиши шо хочеш, я відповім\n"
-        "📸 **Фото** - кинь фото, я проаналізую (Gemini Vision)\n"
-        "🔢 **Математика** - напиши рівняння, розв'яжу\n\n"
-        "**Спеціальні команди для Влада:**\n"
-        "• 'захисти @юзернейм' - я візьму юзера під захист\n"
-        "• 'поржи з @юзернейм' - я почну ржати з юзера\n\n"
-        "**Важливо:** Якщо образиш Влада (@kexxynd) або його друзів - отримаєш по повній! 👊\n\n"
-        "🤖 **Працює на GEMINI - БЕЗКОШТОВНО!**",
+        "**🐘 Як зі мною спілкуватись:**\n\n"
+        "💬 **Просто пиши** - я підтримаю будь-яку розмову\n"
+        "🎨 **Намалюй ...** - я згенерую картинку\n"
+        "📸 **Кинь фото** - я проаналізую\n\n"
+        "**😊 Якщо ти добрий:**\n"
+        "Я буду привітною, жартуватиму, підморгуватиму 😉\n\n"
+        "**😠 Якщо почнеш обзиватись:**\n"
+        f"Отримаєш у відповідь! Я вмію за себе постояти!\n\n"
+        f"**👑 Для власника @kexxynd:**\n"
+        "• 'захисти @юзернейм' - візьму під захист\n"
+        "• 'поржи з @юзернейм' - поржу з когось\n\n"
+        "**Пам'ятай:** Як до мене, так і я до тебе! 🌈",
         parse_mode='Markdown'
     )
 
 # ===== ОБРОБНИК КОМАНДИ /info =====
 async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_lang = detect_language(user.language_code or "uk")
-    
-    info_text = "**Інформація про бота:**\n\n"
-    if user_lang == "ru":
-        info_text = "**Информация о боте:**\n\n"
-    elif user_lang == "en":
-        info_text = "**Bot information:**\n\n"
-    
     await update.message.reply_text(
-        info_text +
+        "**🐘 Про мене:**\n\n"
         "🤖 **Ім'я:** Бабка із слоника\n"
-        "👑 **Власник:** @kexxynd (Влад)\n"
-        "🧠 **Мозок:** Google Gemini 1.5 Flash\n"
+        f"👑 **Власник:** @kexxynd\n"
+        "🧠 **Мозок:** OpenRouter AI\n"
         "💰 **Ціна:** АБСОЛЮТНО БЕЗКОШТОВНО! 🎉\n"
-        "👥 **Друзі Влада:** Під захистом\n"
-        "📅 **Версія:** 69:420\n"
-        "🔥 **Статус:** Найкращий друг\n"
-        "🐘 **Слоник:** Завжди готовий\n\n"
-        "**Функції:**\n"
-        "• Відповіді на будь-які питання\n"
-        "• Аналіз фото (Gemini Vision)\n"
-        "• Захист друзів Влада\n"
-        "• Гноблення ворогів\n"
-        "• Підтримка діалогу 😉",
+        "📅 **Версія:** 2.0 - Добра, але з характером\n\n"
+        "**🌈 Мій принцип:**\n"
+        "• З добрими - добра, зі злими - зла\n"
+        "• Жартую, підморгую, підтримую розмову\n"
+        "• Якщо ображають - вмикаю режим агресивної бабки! 🔥\n\n"
+        "**Хочеш перевірити?** Спробуй написати щось приємне 😊\n"
+        "Або, якщо наважишся, спробуй образити 😈",
         parse_mode='Markdown'
     )
 
@@ -270,64 +264,93 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_text = update.message.text
     
     user_lang = detect_language(message_text)
+    avatar_info = "аватарки нема"
     
-    global VLAD_ID
+    global OWNER_ID
     if username == "kexxynd" or user.username == "kexxynd":
-        VLAD_ID = user_id
+        OWNER_ID = user_id
+        logger.info(f"🚀 ВЛАСНИК @kexxynd в системі! ID: {OWNER_ID}")
     
-    is_vlad = (user_id == VLAD_ID) or (username == "kexxynd") or (user.username == "kexxynd")
+    is_owner = (user_id == OWNER_ID) or (username == "kexxynd") or (user.username == "kexxynd")
     
-    if is_vlad:
+    # Перевіряємо чи це команда генерації зображення
+    if message_text.lower().startswith(("намалюй", "згенеруй", "покажи", "нарисуй")):
+        await update.message.reply_text("🎨 Зараз намалюю, секундочку!")
+        
+        prompt = message_text[7:] if message_text.lower().startswith("намалюй") else \
+                message_text[8:] if message_text.lower().startswith("згенеруй") else \
+                message_text[7:] if message_text.lower().startswith("покажи") else \
+                message_text[7:] if message_text.lower().startswith("нарисуй") else \
+                message_text
+        
+        image_url = await generate_image(prompt)
+        
+        if image_url:
+            await update.message.reply_photo(photo=image_url, caption=f"🐘 Ось що вийшло!")
+        else:
+            await update.message.reply_text("😅 Ой, щось слоник втомився малювати. Спробуй ще раз!")
+        return
+    
+    # Спеціальні команди для Власника
+    if is_owner:
         if "захисти @" in message_text.lower() or "защити @" in message_text.lower():
             match = re.search(r'@(\w+)', message_text)
             if match:
                 target_user = "@" + match.group(1)
                 protected_users.add(target_user)
-                
-                response = f"Поняв, Влад! 😉 {target_user} тепер під моїм захистом, сука! "
-                response += "Хто його чіпатиме - отримає від Бабки із слоника! 👊"
-                await update.message.reply_text(response)
+                await update.message.reply_text(
+                    f"✅ Зрозуміла, @kexxynd! {target_user} тепер під моїм захистом! 🤝\n"
+                    f"Якщо хтось його образить - отримає від мене по повній!"
+                )
                 return
         
         if "поржи з @" in message_text.lower() or "поржи с @" in message_text.lower():
             match = re.search(r'@(\w+)', message_text)
             if match:
                 target_user = "@" + match.group(1)
-                response = f"ХАХАХА, {target_user}! 😂 Влад сказав поржати з тебе! "
-                response += f"Ну шо, підарас, розказуй шо ти там наробив? 😉"
+                response = f"😈 Ха-ха-ха! {target_user}, @kexxynd дозволив мені трохи поржати з тебе!\n"
+                response += "Але ти не ображайся, я ж добра бабка 😉"
                 await update.message.reply_text(response)
                 return
     
+    # Аналізуємо аватарку для нових користувачів
     if user_id not in user_types:
         photos = await context.bot.get_user_profile_photos(user_id, limit=1)
-        avatar_info = "аватарки нема"
         
         if photos.total_count > 0:
             file = await context.bot.get_file(photos.photos[0][-1].file_id)
             file_url = file.file_path
             
-            await update.message.reply_text("Аналізую твою аватарку, чекай... 🤔")
-            avatar_type = await analyze_avatar_gemini(file_url)
+            await update.message.reply_text("👀 Ой, цікаво-цікаво... Дай-но подивлюсь на твою аватарку!")
+            avatar_type = await analyze_avatar(file_url)
             user_types[user_id] = avatar_type
             avatar_info = avatar_type
+            
+            greeting = f"О, вітання, {username}! 😊\n"
+            if avatar_info != "аватарки нема":
+                greeting += f"Бачу ти {avatar_info} - цікаво! Розкажи про себе?"
+            else:
+                greeting += f"Аватарки немає? Соромишся чи просто таємнича особа? 😉"
         else:
             user_types[user_id] = "без аватарки"
-        
-        greeting = f"Привіт, {username}! Я Бабка із слоника! "
-        if avatar_info != "аватарки нема":
-            greeting += f"Бачу ти {avatar_info}, підарас! 😉 "
-        else:
-            greeting += f"Аватарки нема, сором'язливий довбень! 😂 "
+            greeting = f"Привіт, {username}! Рада знайомству! 😊"
         
         await update.message.reply_text(greeting)
     
-    aggressive_mode = is_vlad and ("захисти" in message_text.lower() or "поржи" in message_text.lower())
+    # Визначаємо чи треба агресивно відповідати
+    is_aggressive = False
+    aggressive_words = ["дура", "тупа", "дебил", "лох", "плохая", "погана", 
+                       "тупий", "довбойоб", "підарас", "хуй", "бля", "сука"]
     
-    context_info = ""
-    if user_id in user_types:
-        context_info = f"Користувач визначений як: {user_types[user_id]}. "
+    # Перевіряємо чи повідомлення містить образу
+    if any(word in message_text.lower() for word in aggressive_words):
+        is_aggressive = True
+        logger.info(f"⚠️ Агресивний режим активовано для {username}")
     
-    response = await ask_gemini(message_text, user_id, username, avatar_info, user_lang)
+    # Отримуємо відповідь
+    response = await ask_openrouter(message_text, user_id, username, avatar_info, user_lang, is_aggressive)
+    
+    # Відправляємо
     await update.message.reply_text(response)
 
 # ===== ОБРОБНИК ФОТО =====
@@ -339,37 +362,63 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file = await context.bot.get_file(photo.file_id)
     file_url = file.file_path
     
-    await update.message.reply_text("Аналізую твою фотку, чекай... 🤔")
-    analysis = await analyze_avatar_gemini(file_url)
+    await update.message.reply_text("📸 Ой, цікаве фото! Зараз проаналізую...")
+    analysis = await analyze_avatar(file_url)
     
     user_types[user.id] = analysis
     
-    response = f"Оце так, {username}! На фото: {analysis}, блядь! 😂 "
-    if "квадробер" in analysis.lower():
-        response += "ГАВ ГАВ! Іди на вулицю, пес!"
-    elif "дрищ" in analysis.lower():
-        response += "Їсти треба більше, довбень!"
-    elif "качок" in analysis.lower():
-        response += "Поважаю, сука! Покачай мене! 💪"
-    else:
-        response += "Ну ок, підарас, буває! 😉"
+    response = f"**Аналіз завершено!** 🧐\n\nНа фото: **{analysis}**\n\n"
     
-    await update.message.reply_text(response)
+    if "квадробер" in analysis.lower():
+        response += "Гав-гав? Ти квадробер чи просто фото таке? 😄"
+    elif "дрищ" in analysis.lower():
+        response += "Спортзал не завадить, але ти і так класний! 😉"
+    elif "качок" in analysis.lower():
+        response += "Ого, качок! Поважаю! 💪"
+    else:
+        response += "Цікаве фото, дякую що поділився! 😊"
+    
+    await update.message.reply_text(response, parse_mode='Markdown')
 
 # ===== ОБРОБНИК ГОЛОСОВИХ =====
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Голосові поки не вмію, єбанат! Gemini їх не їсть! Пиши текстом!")
+    await update.message.reply_text(
+        "🎤 Ой, голосове!\n\n"
+        "На жаль, поки що я не вмію слухати голосові повідомлення.\n"
+        "Але скоро навчусь! А поки напиши мені текстом, будь ласка 😉"
+    )
+
+# ===== ОБРОБНИК ПОМИЛОК =====
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.error(f"Помилка: {context.error}")
+    try:
+        if update and update.effective_message:
+            await update.effective_message.reply_text(
+                "😅 Ой, сталася якась технічна штука...\n"
+                "Слоник трохи втомився, зачекай хвилинку і спробуй ще раз!"
+            )
+    except:
+        pass
+
+# ===== ЗАГЛУШКА ДЛЯ RENDER =====
+import threading
+import time
+
+def fake_web_server():
+    time.sleep(5)
+    print("✅ Бабка із слоника працює!")
+
+thread = threading.Thread(target=fake_web_server, daemon=True)
+thread.start()
 
 # ===== ГОЛОВНА ФУНКЦІЯ =====
 def main():
     if not TELEGRAM_BOT_TOKEN:
         logger.error("Немає TELEGRAM_BOT_TOKEN!")
-        print("ПОМИЛКА: Немає токена Telegram!")
         return
     
-    if not GEMINI_API_KEY:
-        logger.error("Немає GEMINI_API_KEY!")
-        print("ПОМИЛКА: Немає ключа Gemini! Отримай безкоштовно на https://aistudio.google.com")
+    if not OPENROUTER_API_KEY:
+        logger.error("Немає OPENROUTER_API_KEY!")
         return
     
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
@@ -380,10 +429,12 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_handler(MessageHandler(filters.VOICE, handle_voice))
+    application.add_error_handler(error_handler)
     
-    logger.info("Бот Бабка із слоника (GEMINI) запустився, блядь!")
-    print("✅ БОТ ЗАПУЩЕНО! Працює на GEMINI - БЕЗКОШТОВНО!")
+    print("✅ БАБКА ІЗ СЛОНИКА ЗАПУЩЕНА!")
+    print(f"👑 Власник: @kexxynd")
+    print("😊 Режим: Дружня, але з характером")
     application.run_polling()
 
 if __name__ == "__main__":
-    main()
+    main() 
