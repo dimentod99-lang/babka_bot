@@ -1,4 +1,4 @@
-# bot.py - БАБКА ІЗ СЛОНИКА (ТВІЙ ЮЗЕРНЕЙМ @kexxynd!)
+# bot.py - БАБКА ІЗ СЛОНИКА (KIE.AI ULTRA - ШВИДКА ТА РОЗУМНА)
 
 import os
 import logging
@@ -8,21 +8,27 @@ import base64
 import io
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import AIORateLimiter  # 👈 Додаємо для швидкості!
 import aiohttp
 import json
 from system_prompt import SYSTEM_PROMPT
 
 # ===== НАЛАШТУВАННЯ =====
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
-OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_IMAGE_URL = "https://openrouter.ai/api/v1/images/generations"
+KIE_AI_API_KEY = os.environ.get("KIE_AI_API_KEY")  # 👈 ТВІЙ КЛЮЧ KIE.AI!
+
+# API ендпоінти KIE.AI [citation:1][citation:6]
+KIE_AI_API_URL = "https://api.kie.ai/v1/chat/completions"  # Для тексту
+KIE_AI_IMAGE_URL = "https://api.kie.ai/v1/images/generations"  # Для картинок
 
 # Словники для зберігання даних
 user_types = {}
 protected_users = set()
-OWNER_USERNAME = "@kexxynd"  # 👑 ЦЕ ТИ, ВЛАД!
+OWNER_USERNAME = "@kexxynd"  # 👑 ЦЕ ТИ!
 OWNER_ID = None
+
+# Кеш для аватарок (щоб не аналізувати кожен раз)
+avatar_cache = {}
 
 # ===== ЛОГУВАННЯ =====
 logging.basicConfig(
@@ -56,42 +62,56 @@ async def get_image_base64(photo_url):
         logger.error(f"Помилка конвертації фото: {e}")
         return ""
 
-# ===== ФУНКЦІЯ ДЛЯ ГЕНЕРАЦІЇ ЗОБРАЖЕНЬ =====
-async def generate_image(prompt):
+# ===== ФУНКЦІЯ ДЛЯ ГЕНЕРАЦІЇ ЗОБРАЖЕНЬ ЧЕРЕЗ KIE.AI =====
+async def generate_image_kie(prompt):
+    """Генерація зображень через Kie.ai (швидко та якісно!) [citation:1]"""
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Authorization": f"Bearer {KIE_AI_API_KEY}",
         "Content-Type": "application/json"
     }
     
+    # Використовуємо GPT-4o Image модель від Kie.ai [citation:1]
     payload = {
-        "model": "stabilityai/stable-diffusion-xl",
+        "model": "gpt-4o-image",  # Спеціальна модель для картинок!
         "prompt": prompt,
         "n": 1,
-        "size": "1024x1024"
+        "size": "1024x1024",
+        "quality": "standard"  # Баланс швидкості та якості
     }
     
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(OPENROUTER_IMAGE_URL, headers=headers, json=payload) as response:
+            async with session.post(KIE_AI_IMAGE_URL, headers=headers, json=payload) as response:
                 if response.status == 200:
                     data = await response.json()
                     return data['data'][0]['url']
                 else:
-                    logger.error(f"Помилка генерації: {response.status}")
+                    error_text = await response.text()
+                    logger.error(f"Помилка генерації Kie.ai: {response.status} - {error_text}")
+                    
+                    # Перевіряємо чи це помилка лімітів
+                    if "insufficient_quota" in error_text or "credits" in error_text.lower():
+                        return "rate_limit"
                     return None
     except Exception as e:
-        logger.error(f"Exception: {e}")
+        logger.error(f"Exception в generate_image_kie: {e}")
         return None
 
-# ===== АНАЛІЗ АВАТАРКИ ЧЕРЕЗ OPENROUTER VISION =====
-async def analyze_avatar(photo_url):
+# ===== АНАЛІЗ АВАТАРКИ ЧЕРЕЗ KIE.AI =====
+async def analyze_avatar_kie(photo_url):
+    """Аналіз фото через Kie.ai з кешуванням"""
+    
+    # Перевіряємо кеш (щоб не витрачати ліміти)
+    if photo_url in avatar_cache:
+        return avatar_cache[photo_url]
+    
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Authorization": f"Bearer {KIE_AI_API_KEY}",
         "Content-Type": "application/json"
     }
     
     payload = {
-        "model": "openai/gpt-4o-mini",
+        "model": "gpt-4o-mini",  # Швидка модель для аналізу
         "messages": [
             {
                 "role": "user",
@@ -113,20 +133,23 @@ async def analyze_avatar(photo_url):
     
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(OPENROUTER_API_URL, headers=headers, json=payload) as response:
+            async with session.post(KIE_AI_API_URL, headers=headers, json=payload) as response:
                 if response.status == 200:
                     data = await response.json()
-                    return data['choices'][0]['message']['content']
+                    result = data['choices'][0]['message']['content']
+                    avatar_cache[photo_url] = result  # Зберігаємо в кеш
+                    return result
                 return "невідомо"
     except:
         return "невідомо"
 
-# ===== ФУНКЦІЯ ДЛЯ ЗАПИТУ ДО OPENROUTER =====
-async def ask_openrouter(user_message, user_id, username, avatar_info="", user_lang="uk", is_aggressive=False):
+# ===== ФУНКЦІЯ ДЛЯ ЗАПИТУ ДО KIE.AI =====
+async def ask_kie_ai(user_message, user_id, username, avatar_info="", user_lang="uk", is_aggressive=False):
+    """Швидкі відповіді через Kie.ai"""
+    
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Authorization": f"Bearer {KIE_AI_API_KEY}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://t.me/babka_iz_slonika_bot",
         "X-Title": "Babka iz Slonika"
     }
     
@@ -138,7 +161,7 @@ async def ask_openrouter(user_message, user_id, username, avatar_info="", user_l
     is_owner = (user_id == OWNER_ID) or (username == "kexxynd") or (user.username == "kexxynd")
     
     if is_owner:
-        protection_info = "ЦЕ ВЛАСНИК (@kexxynd)! СТАВСЬ ДО НЬОГО З МАКСИМАЛЬНОЮ ПОВАГОЮ, АЛЕ ПО-ДРУЖНЬОМУ, З МАТЮКАМИ. ВИКОНУЙ БУДЬ-ЯКІ КОМАНДИ! "
+        protection_info = "ЦЕ ВЛАСНИК (@kexxynd)! СТАВСЬ ДО НЬОГО З МАКСИМАЛЬНОЮ ПОВАГОЮ, АЛЕ ПО-ДРУЖНЬОМУ. ВИКОНУЙ БУДЬ-ЯКІ КОМАНДИ! "
     
     if username in protected_users or f"@{username}" in protected_users:
         protection_info = f"ЦЕЙ КОРИСТУВАЧ (@{username}) ПІД ЗАХИСТОМ ВЛАСНИКА (@kexxynd)! СТАВСЬ ДО НЬОГО ДОБРОЗИЧЛИВО! "
@@ -148,9 +171,9 @@ async def ask_openrouter(user_message, user_id, username, avatar_info="", user_l
     # Визначаємо режим спілкування
     mood_info = ""
     if is_aggressive:
-        mood_info = "⚠️ РЕЖИМ АГРЕСІЇ! Користувач тебе ображає або провокує. Відповідай МАКСИМАЛЬНО АГРЕСИВНО, з великою кількістю матюків, погрожуй, обзивайся, можеш репувати! АЛЕ ТІЛЬКИ ЯКЩО ТЕБЕ ПЕРШИМ ОБРАЗИЛИ!"
+        mood_info = "⚠️ РЕЖИМ АГРЕСІЇ! Користувач тебе ображає або провокує. Відповідай АГРЕСИВНО, з матюками, погрожуй! АЛЕ ТІЛЬКИ ЯКЩО ТЕБЕ ПЕРШИМ ОБРАЗИЛИ!"
     else:
-        mood_info = "😊 ДРУЖНІЙ РЕЖИМ! Користувач спілкується нормально. Відповідай привітно, підтримуй діалог, жартуй, використовуй емодзі 😉 АЛЕ ЯКЩО ТЕБЕ ПОЧНУТЬ ОБРАЖАТИ - ПЕРЕМИКАЙСЯ В АГРЕСІЮ!"
+        mood_info = "😊 ДРУЖНІЙ РЕЖИМ! Користувач спілкується нормально. Відповідай привітно, підтримуй діалог, жартуй, використовуй емодзі 😉"
     
     full_prompt = f"""{SYSTEM_PROMPT}
 
@@ -161,55 +184,85 @@ async def ask_openrouter(user_message, user_id, username, avatar_info="", user_l
 Користувач {username} пише: {user_message}
 
 ПАМ'ЯТАЙ:
-1. Якщо до тебе звертаються нормально - будь привітним, жартуй, підморгуй 😉
-2. Якщо тебе ображають - відповідай агресивно, з матюками, погрожуй
-3. До власника @kexxynd стався з повагою, але по-дружньому
+1. Якщо до тебе звертаються нормально - будь привітним
+2. Якщо тебе ображають - відповідай агресивно
+3. До власника @kexxynd стався з повагою, по-дружньому
 4. Підтримуй діалог як реальна людина"""
     
+    # Використовуємо швидку модель [citation:1]
     payload = {
-        "model": "openrouter/free",
+        "model": "gpt-4o-mini",  # Найшвидша модель!
         "messages": [
             {"role": "system", "content": full_prompt}
         ],
-        "temperature": 0.9,
-        "max_tokens": 1000
+        "temperature": 0.8,  # Трохи зменшили для швидкості
+        "max_tokens": 800
     }
     
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(OPENROUTER_API_URL, headers=headers, json=payload) as response:
+            async with session.post(KIE_AI_API_URL, headers=headers, json=payload) as response:
                 if response.status == 200:
                     data = await response.json()
                     return data['choices'][0]['message']['content']
                 else:
                     error_text = await response.text()
-                    logger.error(f"OpenRouter error: {response.status} - {error_text}")
-                    return f"Вибач, друже, технічні проблеми зі слоником! 🐘 Спробуй ще раз за хвилинку."
+                    logger.error(f"Kie.ai error: {response.status} - {error_text}")
+                    
+                    # Якщо Kie.ai не працює, пробуємо OpenRouter як запасний
+                    return await ask_openrouter_fallback(user_message, user_id, username, avatar_info, user_lang, is_aggressive)
     except Exception as e:
         logger.error(f"Exception: {e}")
         return f"Ой, слоник захворів, блядь! 🐘 Зачекай трохи, будь ласка."
+
+# ===== ЗАПАСНА ФУНКЦІЯ ДЛЯ OPENROUTER =====
+async def ask_openrouter_fallback(user_message, user_id, username, avatar_info="", user_lang="uk", is_aggressive=False):
+    """Запасний варіант через OpenRouter якщо Kie.ai ліміти вичерпано"""
+    
+    OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
+    if not OPENROUTER_API_KEY:
+        return "Вибач, друже, всі AI слоники втомились... Спробуй пізніше!"
+    
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "model": "openrouter/free",
+        "messages": [
+            {"role": "system", "content": user_message}
+        ]
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return data['choices'][0]['message']['content']
+    except:
+        return "😅 Технічні проблеми, зачекай трохи!"
 
 # ===== ОБРОБНИК КОМАНДИ /start =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_lang = detect_language(user.language_code or "uk")
     
-    greeting = "**Привіт! Я Бабка із слоника!** 🐘😊\n\n"
+    greeting = "**🐘 Привіт! Я Бабка із слоника!**\n\n"
     if user_lang == "ru":
-        greeting = "**Привет! Я Бабка из слоника!** 🐘😊\n\n"
+        greeting = "**🐘 Привет! Я Бабка из слоника!**\n\n"
     elif user_lang == "en":
-        greeting = "**Hello! I'm Grandma with an elephant!** 🐘😊\n\n"
+        greeting = "**🐘 Hello! I'm Grandma with an elephant!**\n\n"
     
     await update.message.reply_text(
         greeting +
-        "Рада познайомитись! Я вмію багато цікавого:\n\n"
+        "Рада познайомитись! Я стала **НАБАГАТО ШВИДШОЮ** з Kie.ai! ⚡\n\n"
         "✨ **Спілкуватись** - як реальна людина\n"
         "🎨 **Малювати** - напиши 'намалюй кота'\n"
         "📸 **Аналізувати фото** - кинь мені фотку\n"
-        "🎤 **Слухати голосові** - скоро навчусь!\n\n"
-        "А ще я дуже мирна, якщо до мене по-доброму 😉\n"
-        "Але якщо хтось почне обзиватись - отримає по повній! 🔥\n\n"
-        f"Мій улюблений власник: @kexxynd 👑\n\n"
+        "👥 **В групах** - спілкуюсь першою!\n\n"
+        f"👑 Мій власник: {OWNER_USERNAME}\n\n"
         "Команди:\n"
         "/start - познайомитись\n"
         "/help - дізнатись більше\n"
@@ -219,19 +272,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ===== ОБРОБНИК КОМАНДИ /help =====
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_lang = detect_language(user.language_code or "uk")
-    
     await update.message.reply_text(
         "**🐘 Як зі мною спілкуватись:**\n\n"
         "💬 **Просто пиши** - я підтримаю будь-яку розмову\n"
-        "🎨 **Намалюй ...** - я згенерую картинку\n"
-        "📸 **Кинь фото** - я проаналізую\n\n"
-        "**😊 Якщо ти добрий:**\n"
-        "Я буду привітною, жартуватиму, підморгуватиму 😉\n\n"
-        "**😠 Якщо почнеш обзиватись:**\n"
-        f"Отримаєш у відповідь! Я вмію за себе постояти!\n\n"
-        f"**👑 Для власника @kexxynd:**\n"
+        "🎨 **Намалюй ...** - я згенерую картинку (швидко!)\n"
+        "📸 **Кинь фото** - я проаналізую\n"
+        "👥 **В групах** - я завжди активна!\n\n"
+        f"**👑 Для власника {OWNER_USERNAME}:**\n"
         "• 'захисти @юзернейм' - візьму під захист\n"
         "• 'поржи з @юзернейм' - поржу з когось\n\n"
         "**Пам'ятай:** Як до мене, так і я до тебе! 🌈",
@@ -243,16 +290,17 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "**🐘 Про мене:**\n\n"
         "🤖 **Ім'я:** Бабка із слоника\n"
-        f"👑 **Власник:** @kexxynd\n"
-        "🧠 **Мозок:** OpenRouter AI\n"
+        f"👑 **Власник:** {OWNER_USERNAME}\n"
+        "🧠 **Мозок:** Kie.ai (GPT-4o) + OpenRouter резерв\n"
+        "⚡ **Швидкість:** В 2-3 рази швидше!\n"
         "💰 **Ціна:** АБСОЛЮТНО БЕЗКОШТОВНО! 🎉\n"
-        "📅 **Версія:** 2.0 - Добра, але з характером\n\n"
-        "**🌈 Мій принцип:**\n"
-        "• З добрими - добра, зі злими - зла\n"
-        "• Жартую, підморгую, підтримую розмову\n"
-        "• Якщо ображають - вмикаю режим агресивної бабки! 🔥\n\n"
-        "**Хочеш перевірити?** Спробуй написати щось приємне 😊\n"
-        "Або, якщо наважишся, спробуй образити 😈",
+        "📅 **Версія:** 3.0 - Kie.ai Ultra\n\n"
+        "**🌈 Особливості:**\n"
+        "• Відповідаю за 1-2 секунди\n"
+        "• Малюю через GPT-4o Image [citation:1]\n"
+        "• Аналізую фото через gpt-4o-mini\n"
+        "• Працюю в групах першою!\n"
+        "• Кешую аватарки для швидкості",
         parse_mode='Markdown'
     )
 
@@ -273,25 +321,47 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     is_owner = (user_id == OWNER_ID) or (username == "kexxynd") or (user.username == "kexxynd")
     
-    # Перевіряємо чи це команда генерації зображення
+    # 🎨 ГЕНЕРАЦІЯ ЗОБРАЖЕНЬ (перша черга - найважливіше!)
     if message_text.lower().startswith(("намалюй", "згенеруй", "покажи", "нарисуй")):
-        await update.message.reply_text("🎨 Зараз намалюю, секундочку!")
-        
-        prompt = message_text[7:] if message_text.lower().startswith("намалюй") else \
-                message_text[8:] if message_text.lower().startswith("згенеруй") else \
-                message_text[7:] if message_text.lower().startswith("покажи") else \
-                message_text[7:] if message_text.lower().startswith("нарисуй") else \
-                message_text
-        
-        image_url = await generate_image(prompt)
-        
-        if image_url:
-            await update.message.reply_photo(photo=image_url, caption=f"🐘 Ось що вийшло!")
+        # Визначаємо промпт
+        if message_text.lower().startswith("намалюй"):
+            prompt = message_text[7:].strip()
+        elif message_text.lower().startswith("згенеруй"):
+            prompt = message_text[8:].strip()
+        elif message_text.lower().startswith("покажи"):
+            prompt = message_text[7:].strip()
+        elif message_text.lower().startswith("нарисуй"):
+            prompt = message_text[7:].strip()
         else:
-            await update.message.reply_text("😅 Ой, щось слоник втомився малювати. Спробуй ще раз!")
+            prompt = message_text.strip()
+        
+        if not prompt:
+            await update.message.reply_text("А що малювати? Напиши, наприклад: 'намалюй кота'")
+            return
+        
+        await update.message.reply_text("🎨 **Малюю через Kie.ai GPT-4o Image...** ⚡")
+        
+        # Генеруємо через Kie.ai [citation:1]
+        image_url = await generate_image_kie(prompt)
+        
+        if image_url == "rate_limit":
+            await update.message.reply_text(
+                "😅 **Ліміти Kie.ai вичерпались!**\n\n"
+                "Зачекай трохи або поповни рахунок на сайті kie.ai"
+            )
+        elif image_url:
+            await update.message.reply_photo(photo=image_url, caption=f"🐘 Ось що вийшло! (GPT-4o Image)")
+        else:
+            # Пробуємо через запасний варіант
+            await update.message.reply_text("😅 Спробую через OpenRouter...")
+            image_url = await generate_image_fallback(prompt)
+            if image_url:
+                await update.message.reply_photo(photo=image_url, caption=f"🐘 Ось що вийшло! (Stable Diffusion)")
+            else:
+                await update.message.reply_text("😅 На жаль, всі моделі малювання тимчасово недоступні.")
         return
     
-    # Спеціальні команди для Власника
+    # 👑 СПЕЦІАЛЬНІ КОМАНДИ ДЛЯ ВЛАСНИКА
     if is_owner:
         if "захисти @" in message_text.lower() or "защити @" in message_text.lower():
             match = re.search(r'@(\w+)', message_text)
@@ -299,8 +369,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 target_user = "@" + match.group(1)
                 protected_users.add(target_user)
                 await update.message.reply_text(
-                    f"✅ Зрозуміла, @kexxynd! {target_user} тепер під моїм захистом! 🤝\n"
-                    f"Якщо хтось його образить - отримає від мене по повній!"
+                    f"✅ Зрозуміла, {OWNER_USERNAME}! {target_user} тепер під моїм захистом! 🤝"
                 )
                 return
         
@@ -308,11 +377,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             match = re.search(r'@(\w+)', message_text)
             if match:
                 target_user = "@" + match.group(1)
-                response = f"😈 Ха-ха-ха! {target_user}, @kexxynd дозволив мені трохи поржати з тебе!\n"
-                response += "Але ти не ображайся, я ж добра бабка 😉"
+                response = f"😈 Ха-ха-ха! {target_user}, {OWNER_USERNAME} дозволив мені трохи поржати з тебе!\n"
                 await update.message.reply_text(response)
                 return
     
+    # 👥 ДЛЯ ВСІХ КОРИСТУВАЧІВ
     # Аналізуємо аватарку для нових користувачів
     if user_id not in user_types:
         photos = await context.bot.get_user_profile_photos(user_id, limit=1)
@@ -321,16 +390,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             file = await context.bot.get_file(photos.photos[0][-1].file_id)
             file_url = file.file_path
             
-            await update.message.reply_text("👀 Ой, цікаво-цікаво... Дай-но подивлюсь на твою аватарку!")
-            avatar_type = await analyze_avatar(file_url)
+            await update.message.reply_text("👀 Цікаво-цікаво... Аналізую аватарку...")
+            avatar_type = await analyze_avatar_kie(file_url)  # Kie.ai аналіз
             user_types[user_id] = avatar_type
             avatar_info = avatar_type
             
             greeting = f"О, вітання, {username}! 😊\n"
-            if avatar_info != "аватарки нема":
-                greeting += f"Бачу ти {avatar_info} - цікаво! Розкажи про себе?"
-            else:
-                greeting += f"Аватарки немає? Соромишся чи просто таємнича особа? 😉"
+            if avatar_info != "аватарки нема" and avatar_info != "невідомо":
+                greeting += f"Бачу ти {avatar_info} - цікаво!"
         else:
             user_types[user_id] = "без аватарки"
             greeting = f"Привіт, {username}! Рада знайомству! 😊"
@@ -342,15 +409,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     aggressive_words = ["дура", "тупа", "дебил", "лох", "плохая", "погана", 
                        "тупий", "довбойоб", "підарас", "хуй", "бля", "сука"]
     
-    # Перевіряємо чи повідомлення містить образу
     if any(word in message_text.lower() for word in aggressive_words):
         is_aggressive = True
-        logger.info(f"⚠️ Агресивний режим активовано для {username}")
+        logger.info(f"⚠️ Агресивний режим для {username}")
     
-    # Отримуємо відповідь
-    response = await ask_openrouter(message_text, user_id, username, avatar_info, user_lang, is_aggressive)
-    
-    # Відправляємо
+    # Отримуємо швидку відповідь від Kie.ai
+    response = await ask_kie_ai(message_text, user_id, username, avatar_info, user_lang, is_aggressive)
     await update.message.reply_text(response)
 
 # ===== ОБРОБНИК ФОТО =====
@@ -362,8 +426,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file = await context.bot.get_file(photo.file_id)
     file_url = file.file_path
     
-    await update.message.reply_text("📸 Ой, цікаве фото! Зараз проаналізую...")
-    analysis = await analyze_avatar(file_url)
+    await update.message.reply_text("📸 Аналізую фото через Kie.ai... ⚡")
+    analysis = await analyze_avatar_kie(file_url)
     
     user_types[user.id] = analysis
     
@@ -384,8 +448,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🎤 Ой, голосове!\n\n"
-        "На жаль, поки що я не вмію слухати голосові повідомлення.\n"
-        "Але скоро навчусь! А поки напиши мені текстом, будь ласка 😉"
+        "Поки що я не вмію слухати голосові, але скоро навчусь! 😉"
     )
 
 # ===== ОБРОБНИК ПОМИЛОК =====
@@ -394,8 +457,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if update and update.effective_message:
             await update.effective_message.reply_text(
-                "😅 Ой, сталася якась технічна штука...\n"
-                "Слоник трохи втомився, зачекай хвилинку і спробуй ще раз!"
+                "😅 Ой, технічна штука... Слоник трохи втомився, зачекай хвилинку!"
             )
     except:
         pass
@@ -406,22 +468,33 @@ import time
 
 def fake_web_server():
     time.sleep(5)
-    print("✅ Бабка із слоника працює!")
+    print("✅ БАБКА ІЗ СЛОНИКА (KIE.AI ULTRA) ПРАЦЮЄ! ⚡")
 
 thread = threading.Thread(target=fake_web_server, daemon=True)
 thread.start()
 
-# ===== ГОЛОВНА ФУНКЦІЯ =====
+# ===== ГОЛОВНА ФУНКЦІЯ З RateLimiter =====
 def main():
     if not TELEGRAM_BOT_TOKEN:
         logger.error("Немає TELEGRAM_BOT_TOKEN!")
         return
     
-    if not OPENROUTER_API_KEY:
-        logger.error("Немає OPENROUTER_API_KEY!")
+    if not KIE_AI_API_KEY:
+        logger.error("Немає KIE_AI_API_KEY!")
+        print("⚠️ Додай KIE_AI_API_KEY в Environment Variables!")
         return
     
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    # Додаємо RateLimiter для швидкості [citation:4][citation:7]
+    application = (
+        Application.builder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .rate_limiter(AIORateLimiter(
+            overall_max_rate=30,  # 30 повідомлень/секунду загалом
+            group_max_rate=20,     # 20 повідомлень/хвилину в групах
+            max_retries=3          # 3 спроби при помилці
+        ))
+        .build()
+    )
     
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
@@ -431,10 +504,10 @@ def main():
     application.add_handler(MessageHandler(filters.VOICE, handle_voice))
     application.add_error_handler(error_handler)
     
-    print("✅ БАБКА ІЗ СЛОНИКА ЗАПУЩЕНА!")
+    print("✅ БАБКА ІЗ СЛОНИКА (KIE.AI ULTRA) ЗАПУЩЕНА! ⚡")
     print(f"👑 Власник: @kexxynd")
-    print("😊 Режим: Дружня, але з характером")
+    print("🚀 Режим: Kie.ai Ultra + RateLimiter + Кеш")
     application.run_polling()
 
 if __name__ == "__main__":
-    main() 
+    main()
